@@ -18,17 +18,27 @@ os.environ.setdefault("XDG_CACHE_HOME", str(ROOT / ".cache"))
 os.environ.setdefault("LOKY_MAX_CPU_COUNT", "1")
 
 import pandas as pd
+import joblib
 
-from cmj_analysis.events import detect_force_jumps, detect_imu_jumps
+from cmj_analysis.events import (
+    DEFAULT_IMU_FREEFALL_THRESHOLD_G,
+    DEFAULT_IMU_MIN_FREEFALL_S,
+    detect_force_jumps,
+    detect_imu_jumps,
+)
 from cmj_analysis.features import extract_imu_features
 from cmj_analysis.io import estimate_sampling_rate, nominal_clock_offset_s, read_force_csv, read_imu_csv
-from cmj_analysis.modeling import train_and_evaluate
+from cmj_analysis.modeling import compare_feature_sets
 from cmj_analysis.reporting import create_report
-from cmj_analysis.signals import preprocess_force, preprocess_imu
+from cmj_analysis.signals import assess_imu_quality, preprocess_force, preprocess_imu
 from cmj_analysis.sync import match_events
 
 
-NAME_PATTERN = re.compile(r"(?P<date>\d{8})_(?P<sensor>CMJ|IMU)_Test(?P<test>\d+)\.csv$", re.I)
+NAME_PATTERN = re.compile(
+    r"(?P<date>\d{8})_(?P<sensor>CMJ|IMU)_Test(?P<test>\d+)"
+    r"(?:_(?P<suffix>[A-Za-z0-9]+))?\.csv$",
+    re.I,
+)
 IMU_CONFIGS = [
     (0.35, 0.18),
     (0.50, 0.15),
@@ -38,21 +48,29 @@ IMU_CONFIGS = [
 
 
 def discover_pairs(data_dir: Path) -> tuple[list[dict], list[dict]]:
-    sessions: dict[tuple[str, int], dict] = {}
+    sessions: dict[tuple[str, int, str], dict] = {}
     ignored = []
     for path in sorted(data_dir.glob("*.csv")):
         match = NAME_PATTERN.match(path.name)
         if not match:
             ignored.append({"file": str(path), "reason": "filename does not match expected pattern"})
             continue
-        key = (match["date"], int(match["test"]))
+        suffix = (match["suffix"] or "").upper()
+        key = (match["date"], int(match["test"]), suffix)
         sessions.setdefault(key, {})[match["sensor"].upper()] = path
     pairs = []
-    for (date, test), files in sorted(sessions.items()):
+    for (date, test, suffix), files in sorted(sessions.items()):
+        session_id = f"{date}_Test{test}" + (f"_{suffix}" if suffix else "")
         if {"CMJ", "IMU"}.issubset(files):
-            pairs.append({"session_id": f"{date}_Test{test}", "date": date, "test": test, **files})
+            pairs.append({
+                "session_id": session_id,
+                "date": date,
+                "test": test,
+                "session_suffix": suffix,
+                **files,
+            })
         else:
-            ignored.append({"session_id": f"{date}_Test{test}", "reason": "missing force or IMU file"})
+            ignored.append({"session_id": session_id, "reason": "missing force or IMU file"})
     return pairs, ignored
 
 
@@ -82,22 +100,42 @@ def best_imu_alignment(imu, force_events, expected_offset):
     return min(candidates, key=lambda item: item[0])
 
 
-def process_session(pair: dict, session_dir: Path, global_start_id: int):
+def process_session(
+    pair: dict,
+    session_dir: Path,
+    global_start_id: int,
+    detector_mode: str = "fixed",
+):
     force_rec = read_force_csv(pair["CMJ"])
     imu_rec = read_imu_csv(pair["IMU"])
     force_fs = estimate_sampling_rate(force_rec.data["Time"])
     imu_fs = estimate_sampling_rate(imu_rec.data["time_s"])
     force = preprocess_force(force_rec.data, force_fs)
     imu = preprocess_imu(imu_rec.data, imu_fs)
+    imu_quality = assess_imu_quality(imu, imu_fs)
     mass = float(force_rec.metadata["Weight"]) if "Weight" in force_rec.metadata else None
     force_events = detect_force_jumps(force, force_fs, mass_kg=mass)
     if force_events.empty:
         raise ValueError("No force-plate events detected")
 
     expected_offset = nominal_clock_offset_s(force_rec, imu_rec)
-    _, threshold, duration, imu_events, matched, sync = best_imu_alignment(
-        imu, force_events, expected_offset
-    )
+    if detector_mode == "adaptive":
+        _, threshold, duration, imu_events, matched, sync = best_imu_alignment(
+            imu, force_events, expected_offset
+        )
+    else:
+        threshold = DEFAULT_IMU_FREEFALL_THRESHOLD_G
+        duration = DEFAULT_IMU_MIN_FREEFALL_S
+        imu_events = detect_imu_jumps(
+            imu,
+            freefall_threshold_g=threshold,
+            min_freefall_s=duration,
+        )
+        matched, sync = match_events(
+            force_events,
+            imu_events,
+            expected_offset_s=expected_offset,
+        )
     matched = matched[matched["sync_error_s"].abs() <= 0.10].copy().reset_index(drop=True)
     if len(matched) < 3:
         raise ValueError(f"Only {len(matched)} well-synchronized event pairs; minimum is 3")
@@ -111,6 +149,7 @@ def process_session(pair: dict, session_dir: Path, global_start_id: int):
         table["athlete_id"] = athlete_id
         table["recording_date"] = pair["date"]
         table["test_number"] = pair["test"]
+        table["imu_orientation_group"] = imu_quality["imu_orientation_group"]
 
     session_dir.mkdir(parents=True, exist_ok=True)
     force_events.to_csv(session_dir / "force_events.csv", index=False)
@@ -125,7 +164,9 @@ def process_session(pair: dict, session_dir: Path, global_start_id: int):
         "imu_file": str(pair["IMU"]),
         "imu_freefall_threshold_g": threshold,
         "imu_min_freefall_s": duration,
+        "imu_detector_mode": detector_mode,
         "accepted_events": len(matched),
+        **imu_quality,
     }
     (session_dir / "quality.json").write_text(json.dumps(details, indent=2), encoding="utf-8")
     return matched, features, details
@@ -135,6 +176,12 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data-dir", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, default=ROOT / "batch_results")
+    parser.add_argument(
+        "--imu-detector-mode",
+        choices=("fixed", "adaptive"),
+        default="fixed",
+        help="fixed matches deployment; adaptive is a force-assisted diagnostic benchmark",
+    )
     args = parser.parse_args()
     sessions_dir = args.output_dir / "sessions"
     reports_dir = args.output_dir / "reports"
@@ -150,7 +197,10 @@ def main() -> None:
     for number, pair in enumerate(pairs, start=1):
         try:
             matched, features, details = process_session(
-                pair, sessions_dir / pair["session_id"], next_jump_id
+                pair,
+                sessions_dir / pair["session_id"],
+                next_jump_id,
+                detector_mode=args.imu_detector_mode,
             )
             next_jump_id += len(matched)
             all_matched.append(matched)
@@ -163,6 +213,13 @@ def main() -> None:
                 "median_abs_sync_error_s": details["median_abs_sync_error_s"],
                 "imu_threshold_g": details["imu_freefall_threshold_g"],
                 "imu_min_duration_s": details["imu_min_freefall_s"],
+                "imu_detector_mode": details["imu_detector_mode"],
+                "imu_orientation_group": details["imu_orientation_group"],
+                "imu_orientation_review": details["imu_orientation_review"],
+                "imu_negative_filtered_magnitude_samples": details["imu_negative_filtered_magnitude_samples"],
+                "imu_max_sample_gap_s": details["imu_max_sample_gap_s"],
+                "imu_large_sample_gaps": details["imu_large_sample_gaps"],
+                "imu_acceleration_saturation_samples": details["imu_acceleration_saturation_samples"],
             })
             print(f"[{number:02d}/{len(pairs)}] {pair['session_id']}: accepted {len(matched)} jumps")
         except Exception as exc:
@@ -181,10 +238,28 @@ def main() -> None:
     matched_table.to_csv(args.output_dir / "all_matched_events.csv", index=False)
     feature_table.to_csv(args.output_dir / "all_model_features.csv", index=False)
 
-    result = train_and_evaluate(
+    result = compare_feature_sets(
         feature_table,
         model_path=models_dir / "best_impulse_model.joblib",
+        candidate_models_dir=models_dir,
     )
+    detector_metadata = {
+        "mode": args.imu_detector_mode,
+        "freefall_threshold_g": (
+            DEFAULT_IMU_FREEFALL_THRESHOLD_G
+            if args.imu_detector_mode == "fixed"
+            else "force_assisted_grid"
+        ),
+        "min_freefall_s": (
+            DEFAULT_IMU_MIN_FREEFALL_S
+            if args.imu_detector_mode == "fixed"
+            else "force_assisted_grid"
+        ),
+    }
+    for artifact_path in models_dir.glob("*.joblib"):
+        artifact = joblib.load(artifact_path)
+        artifact["imu_detector"] = detector_metadata
+        joblib.dump(artifact, artifact_path)
     result.leaderboard.to_csv(reports_dir / "model_leaderboard.csv", index=False)
     result.predictions.to_csv(reports_dir / "out_of_fold_predictions.csv", index=False)
     create_report(
@@ -193,11 +268,12 @@ def main() -> None:
     )
     print(f"\nAccepted {status['status'].eq('accepted').sum()} sessions and {len(feature_table)} jumps")
     print(result.leaderboard.to_string(index=False))
+    print(f"Selected feature set: {result.best_feature_set}")
     print(f"Validation: {result.validation_method}")
+    print(f"IMU detector mode: {args.imu_detector_mode}")
     print(f"Research-ready for unseen athletes: {result.research_ready}")
     print(f"Outputs: {args.output_dir}")
 
 
 if __name__ == "__main__":
     main()
-

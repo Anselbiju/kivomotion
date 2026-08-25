@@ -7,8 +7,8 @@ import warnings
 import joblib
 import numpy as np
 import pandas as pd
+import sklearn
 from sklearn.base import clone
-from sklearn.compose import TransformedTargetRegressor
 from sklearn.ensemble import RandomForestRegressor, HistGradientBoostingRegressor
 from sklearn.impute import SimpleImputer
 from sklearn.linear_model import Ridge
@@ -24,6 +24,21 @@ TARGET_COLUMNS = {
     "target_takeoff_velocity_m_s",
 }
 
+# These columns describe collection or identity. They must never become model
+# inputs, even when pandas reads a date/test value as a numeric dtype.
+ADMIN_COLUMNS = {
+    "jump_id",
+    "jump_type",
+    "athlete_id",
+    "pseudo_athlete_id",
+    "session_id",
+    "recording_date",
+    "test_number",
+    "imu_orientation_group",
+}
+
+FEATURE_SETS = {"all_axes", "magnitude_only"}
+
 
 @dataclass
 class ModelResult:
@@ -33,6 +48,68 @@ class ModelResult:
     feature_names: list[str]
     validation_method: str
     research_ready: bool
+    feature_set: str
+    target: str
+
+
+@dataclass
+class FeatureSetComparison:
+    leaderboard: pd.DataFrame
+    predictions: pd.DataFrame
+    best_result: ModelResult
+    best_feature_set: str
+    validation_method: str
+    research_ready: bool
+
+
+def select_feature_names(features: pd.DataFrame, feature_set: str = "all_axes") -> list[str]:
+    """Select leakage-safe numeric predictors for a documented feature set."""
+    if feature_set not in FEATURE_SETS:
+        raise ValueError(f"feature_set must be one of {sorted(FEATURE_SETS)}")
+    candidates = [
+        col
+        for col in features.select_dtypes(include=np.number).columns
+        if col not in TARGET_COLUMNS and col not in ADMIN_COLUMNS
+    ]
+    if feature_set == "all_axes":
+        selected = candidates
+    else:
+        magnitude_exact = {
+            "imu_flight_time_s",
+            "acc_mag_area_g_s",
+            "gyro_mag_area_deg",
+        }
+        magnitude_prefixes = ("acc_mag_g_f_", "gyro_mag_dps_f_")
+        selected = [
+            col
+            for col in candidates
+            if col in magnitude_exact or col.startswith(magnitude_prefixes)
+        ]
+    if not selected:
+        raise ValueError(f"No numeric predictors are available for feature_set={feature_set!r}")
+    return selected
+
+
+def _save_model_result(result: ModelResult, path: str | Path) -> None:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    joblib.dump(
+        {
+            "model": result.best_model,
+            "features": result.feature_names,
+            "target": result.target,
+            "feature_set": result.feature_set,
+            "validation_method": result.validation_method,
+            "research_ready": result.research_ready,
+            "training_metrics": result.leaderboard.iloc[0].to_dict(),
+            "library_versions": {
+                "scikit_learn": sklearn.__version__,
+                "pandas": pd.__version__,
+                "numpy": np.__version__,
+            },
+        },
+        path,
+    )
 
 
 def _models(random_state: int = 42) -> dict[str, object]:
@@ -72,6 +149,7 @@ def train_and_evaluate(
     target: str = "target_impulse_ns_kg",
     min_research_events: int = 30,
     model_path: str | Path | None = None,
+    feature_set: str = "all_axes",
 ) -> ModelResult:
     """Compare regressors using out-of-fold predictions.
 
@@ -81,12 +159,7 @@ def train_and_evaluate(
     """
     if target not in features:
         raise ValueError(f"Target {target!r} is not present")
-    id_cols = {"jump_id", "jump_type", "athlete_id", "session_id"}
-    feature_names = [
-        col
-        for col in features.select_dtypes(include=np.number).columns
-        if col not in TARGET_COLUMNS and col not in id_cols
-    ]
+    feature_names = select_feature_names(features, feature_set)
     X = features[feature_names]
     y = features[target].to_numpy(dtype=float)
     if len(features) < 4:
@@ -118,6 +191,7 @@ def train_and_evaluate(
         pred = cross_val_predict(model, X, y, cv=cv, n_jobs=1, **cv_args)
         rows.append(
             {
+                "feature_set": feature_set,
                 "model": name,
                 "mae": mean_absolute_error(y, pred),
                 "rmse": mean_squared_error(y, pred) ** 0.5,
@@ -127,6 +201,7 @@ def train_and_evaluate(
         for idx, (actual, predicted) in enumerate(zip(y, pred)):
             prediction_rows.append(
                 {
+                    "feature_set": feature_set,
                     "model": name,
                     "row": idx,
                     "jump_id": features.iloc[idx].get("jump_id", idx + 1),
@@ -144,23 +219,60 @@ def train_and_evaluate(
     # Session-grouped CV is useful for a personalized model, but it does not
     # establish generalization to unseen athletes.
     research_ready = bool(len(features) >= min_research_events and independent_athletes >= 3 and use_groups)
-    if model_path:
-        Path(model_path).parent.mkdir(parents=True, exist_ok=True)
-        joblib.dump(
-            {
-                "model": best_model,
-                "features": feature_names,
-                "target": target,
-                "validation_method": validation_method,
-                "research_ready": research_ready,
-            },
-            model_path,
-        )
-    return ModelResult(
+    result = ModelResult(
         leaderboard=leaderboard,
         predictions=pd.DataFrame(prediction_rows),
         best_model=best_model,
         feature_names=feature_names,
         validation_method=validation_method,
         research_ready=research_ready,
+        feature_set=feature_set,
+        target=target,
+    )
+    if model_path:
+        _save_model_result(result, model_path)
+    return result
+
+
+def compare_feature_sets(
+    features: pd.DataFrame,
+    target: str = "target_impulse_ns_kg",
+    feature_sets: tuple[str, ...] = ("all_axes", "magnitude_only"),
+    min_research_events: int = 30,
+    model_path: str | Path | None = None,
+    candidate_models_dir: str | Path | None = None,
+) -> FeatureSetComparison:
+    """Evaluate feature families under the same grouped CV and save the winner."""
+    results: dict[str, ModelResult] = {}
+    for feature_set in feature_sets:
+        candidate_path = None
+        if candidate_models_dir:
+            candidate_path = Path(candidate_models_dir) / f"best_{feature_set}_model.joblib"
+        results[feature_set] = train_and_evaluate(
+            features,
+            target=target,
+            min_research_events=min_research_events,
+            model_path=candidate_path,
+            feature_set=feature_set,
+        )
+
+    leaderboard = (
+        pd.concat([result.leaderboard for result in results.values()], ignore_index=True)
+        .sort_values("rmse")
+        .reset_index(drop=True)
+    )
+    predictions = pd.concat(
+        [result.predictions for result in results.values()], ignore_index=True
+    )
+    best_feature_set = str(leaderboard.iloc[0]["feature_set"])
+    best_result = results[best_feature_set]
+    if model_path:
+        _save_model_result(best_result, model_path)
+    return FeatureSetComparison(
+        leaderboard=leaderboard,
+        predictions=predictions,
+        best_result=best_result,
+        best_feature_set=best_feature_set,
+        validation_method=best_result.validation_method,
+        research_ready=best_result.research_ready,
     )

@@ -2,9 +2,14 @@
 __pycache__/
 *.pyc
 .DS_Store
-data/processed/*.csv
+.matplotlib/
+.cache/
+.ipynb_checkpoints/
+notebook_outputs/
+imu_predictions/
+batch_results/
+data/processed/*
 reports/*
 !reports/.gitkeep
 models/*
 !models/.gitkeep
-

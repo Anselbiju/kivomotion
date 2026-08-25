@@ -19,11 +19,22 @@ Five jumps from one athlete/session are enough to test the code, but **not enoug
 | 5. IMU detection | Detect sustained near-zero acceleration magnitude | Orientation-independent first detector for a body-mounted IMU |
 | 6. Match | Robust event pairing plus affine clock mapping | Raw file clocks differ; row-to-row matching would be wrong |
 | 7. Biomechanics | Net/positive impulse, takeoff velocity, jump height and flight-time cross-check | Produces force-plate ground truth and quality checks |
-| 8. Model | Ridge, random forest and histogram gradient boosting | Compares a stable linear baseline with nonlinear models |
+| 8. Model | Compare full-axis and magnitude-only feature families across three regressors | Handles inconsistent IMU mounting without silently rotating signals |
 | 9. Evaluate | Out-of-fold MAE, RMSE and R²; grouped CV when data permits | Prevents leakage between the same athlete's train/test jumps |
 | 10. Report | PNG chart plus self-contained HTML summary | Makes actual vs predicted and residuals reviewable |
 
-The default ML target is **net impulse normalized by body mass (N·s/kg)**. Normalization usually transfers better across athletes than raw N·s. Raw net impulse and takeoff velocity remain available as alternative targets.
+The default ML target is **net impulse normalized by body mass (N·s/kg)**. Normalization usually transfers better across athletes than raw N·s. Numerically, net impulse divided by mass equals takeoff velocity when the integration starts from rest, so reports must not describe these as independent outcomes. Raw net impulse and jump height remain available as alternative targets.
+
+## IMU orientation policy
+
+The current Phase 2 data contains two mounting orientations: 46 recordings are `Y_positive` and 12 are `Y_negative`. All 11 recordings from 30 July plus `20260804_Test6` use the negative orientation. The pipeline records this as a quality label but does **not** flip or rotate axes automatically. A simple gravity alignment reduced validation accuracy and cannot resolve rotation about gravity.
+
+Training evaluates two documented feature families under identical grouped cross-validation:
+
+- `all_axes`: all leakage-safe IMU statistics, including individual X/Y/Z axes;
+- `magnitude_only`: IMU flight time, acceleration/gyroscope magnitude statistics and magnitude areas.
+
+The lowest out-of-fold RMSE determines the saved `best_impulse_model.joblib`. `imu_orientation_group`, `test_number` and `recording_date` are explicitly excluded from predictors. The detector retains the previously validated scalar-magnitude filter for now; its occasional negative ringing is logged in quality output and must be retuned against force events before the formula is changed.
 
 ## Open in VS Code
 
@@ -81,7 +92,7 @@ python scripts/08_train_many_sessions.py \
   session_03/model_features.csv
 ```
 
-The trainer automatically chooses grouped cross-validation when at least three athletes or sessions are present. A strong study design would include:
+The trainer automatically chooses grouped cross-validation when at least three athletes or sessions are present, compares both feature families and saves the best combination. A strong study design would include:
 
 - multiple athletes, days and IMU reattachments;
 - consistent IMU body location and axis/quaternion convention;
@@ -98,7 +109,7 @@ The trainer automatically chooses grouped cross-validation when at least three a
 - **Flight-time velocity cross-check:** `g × flight time / 2`.
 - **Jump height:** `takeoff velocity² / (2g)`.
 
-Movement onset is found from the last stable bodyweight window before takeoff. Force flight uses a threshold of `max(20 N, 5% bodyweight)`. Single-file IMU detection defaults to acceleration magnitude below `0.50 g` for at least `0.15 s`. Batch processing evaluates a documented threshold grid from `0.35–0.80 g`, then accepts only event pairs whose refined force/IMU timing error is at most 100 ms. Thresholds must be locked and revalidated before deployment when hardware placement or protocol changes.
+Movement onset is found from the last stable bodyweight window before takeoff. Force flight uses a threshold of `max(20 N, 5% bodyweight)`. Current-format IMU detection defaults to acceleration magnitude below `0.65 g` for at least `0.15 s`. Batch training uses this same fixed detector so training and deployment features are consistent, then accepts only event pairs whose refined force/IMU timing error is at most 100 ms. `--imu-detector-mode adaptive` retains the force-assisted `0.35–0.80 g` grid for diagnostic comparison only. Thresholds must be locked and revalidated when hardware placement or protocol changes.
 
 ## Process a directory of recordings
 
@@ -116,11 +127,32 @@ Outputs are stored in `batch_results/`:
 - `all_model_features.csv`: one ML-ready row per accepted jump
 - `sessions/`: per-session detections, matches, features and quality metadata
 - `models/best_impulse_model.joblib`: fitted best pipeline
+- `models/best_all_axes_model.joblib`: best full-axis candidate
+- `models/best_magnitude_only_model.joblib`: best magnitude-only candidate
 - `reports/`: grouped-CV metrics, predictions, HTML report and chart
 
-For the current directory, 57 of 58 sessions passed automated QC, producing 298 matched jumps. `20260806_Test3` was excluded because no force-plate flight event was found. Ridge regression led the session-grouped comparison with MAE 0.1685 N·s/kg, RMSE 0.2297 N·s/kg and R² 0.6767.
+With the inference-compatible fixed detector, 56 of 58 sessions passed automated QC, producing 287 matched jumps. `20260731_Test7` was excluded because only two fixed-detector events matched well; `20260806_Test3` had no force-plate flight event. Magnitude-only Ridge regression led the session-grouped comparison with MAE 0.1700 N·s/kg, RMSE 0.2264 N·s/kg and R² 0.6755.
 
 All exports currently contain the same ForceDecks `AthleteId`, despite recorded masses ranging from 48.47 to 111.13 kg. This indicates that the metadata ID is not a reliable participant identifier. The current validation is therefore grouped by recording session and must not be interpreted as performance on unseen athletes. Add a correct participant-to-session manifest before athlete-level validation.
+
+Each session quality JSON and the combined status CSV now record orientation group, orientation review state, negative filtered-magnitude samples, large timestamp gaps and accelerometer saturation. These fields are quality controls, not model inputs.
+
+## Predict a new IMU-only recording
+
+Run the batch trainer first so `batch_results/models/best_impulse_model.joblib` exists. Then a current-format IMU recording can be processed without a force file:
+
+```bash
+python scripts/predict_imu.py \
+  --imu "/path/to/new_IMU_Test.csv" \
+  --expected-jumps 5 \
+  --mass-kg 83.08
+```
+
+The command preprocesses the IMU, records orientation/signal quality, detects jumps, extracts target-free features, loads the saved feature order, predicts normalized impulse/takeoff velocity and creates CSV, PNG and HTML outputs under `imu_predictions/<input filename>/`. Body mass is optional; when supplied it also calculates predicted raw net impulse in N·s.
+
+IMU-only inference defaults to `0.65 g` for at least `0.15 s`. Against the 298 accepted Phase 2 matched events, this fixed setting achieved 96.4% event precision, 97.7% recall and 97.0% F1 with median takeoff difference of 10 ms. It is configurable because a fixed detector cannot use force-assisted threshold selection. Always review warnings and the detected-event table, especially when the detected count differs from the known protocol.
+
+Normalized impulse in N·s/kg and takeoff velocity in m/s have the same numeric value under the training formulation. Raw impulse requires body mass. The current model remains a session-grouped prototype until verified athlete IDs are available.
 
 ## Test
 

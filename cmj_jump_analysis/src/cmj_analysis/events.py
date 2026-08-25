@@ -6,6 +6,8 @@ import pandas as pd
 from .signals import contiguous_regions
 
 G = 9.80665
+DEFAULT_IMU_FREEFALL_THRESHOLD_G = 0.65
+DEFAULT_IMU_MIN_FREEFALL_S = 0.15
 
 
 def estimate_bodyweight(force_n: np.ndarray) -> float:
@@ -94,8 +96,8 @@ def detect_force_jumps(
 
 def detect_imu_jumps(
     imu: pd.DataFrame,
-    freefall_threshold_g: float = 0.50,
-    min_freefall_s: float = 0.15,
+    freefall_threshold_g: float = DEFAULT_IMU_FREEFALL_THRESHOLD_G,
+    min_freefall_s: float = DEFAULT_IMU_MIN_FREEFALL_S,
     min_gap_s: float = 1.5,
 ) -> pd.DataFrame:
     """Detect jumps from sustained near-zero acceleration during flight."""
