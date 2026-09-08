@@ -2,9 +2,11 @@
 __pycache__/
 *.pyc
 .DS_Store
+.matplotlib/
+.cache/
+batch_results/
 data/processed/*.csv
 reports/*
 !reports/.gitkeep
 models/*
 !models/.gitkeep
-

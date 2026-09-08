@@ -23,7 +23,13 @@ import pandas as pd
 
 from cmj_analysis.events import detect_force_jumps, detect_imu_jumps
 from cmj_analysis.features import extract_imu_features
-from cmj_analysis.io import estimate_sampling_rate, nominal_clock_offset_s, read_force_csv, read_imu_csv
+from cmj_analysis.io import (
+    estimate_sampling_rate,
+    matching_athlete_id,
+    nominal_clock_offset_s,
+    read_force_csv,
+    read_imu_csv,
+)
 from cmj_analysis.modeling import train_and_evaluate
 from cmj_analysis.reporting import create_report
 from cmj_analysis.signals import preprocess_force, preprocess_imu
@@ -55,9 +61,10 @@ def stage_3_categorize(force_rec, imu_rec, processed: Path):
     # In this sample the protocol/file name supplies the category. For a mixed
     # study, maintain one manifest row per recording with CMJ/SJ/DJ labels.
     jump_type = "CMJ" if "CMJ" in force_rec.source.name.upper() else "UNLABELLED"
+    athlete_id = matching_athlete_id(force_rec, imu_rec)
     manifest = {
         "session_id": force_rec.source.stem,
-        "athlete_id": force_rec.metadata.get("AthleteId", "unknown"),
+        "athlete_id": athlete_id,
         "jump_type": jump_type,
         "force_source": str(force_rec.source),
         "imu_source": str(imu_rec.source),

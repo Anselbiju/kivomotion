@@ -102,11 +102,11 @@ Movement onset is found from the last stable bodyweight window before takeoff. F
 
 ## Process a directory of recordings
 
-The batch runner pairs files by date and test number, processes each session separately, keeps a quality-control log, creates one combined ML table, performs session-grouped validation, and generates an updated report:
+The batch runner pairs files by date, test number, and optional repeat-athlete suffix; validates the force/IMU athlete IDs; processes each session separately; keeps a quality-control log; creates one combined ML table; performs athlete-grouped validation; and generates an updated report:
 
 ```bash
 python scripts/run_batch.py \
-  --data-dir "/Users/anselbiju/Downloads/Phase 2 Data jumps"
+  --data-dir "../Phase 2 Data jumps"
 ```
 
 Outputs are stored in `batch_results/`:
@@ -118,9 +118,9 @@ Outputs are stored in `batch_results/`:
 - `models/best_impulse_model.joblib`: fitted best pipeline
 - `reports/`: grouped-CV metrics, predictions, HTML report and chart
 
-For the current directory, 57 of 58 sessions passed automated QC, producing 298 matched jumps. `20260806_Test3` was excluded because no force-plate flight event was found. Ridge regression led the session-grouped comparison with MAE 0.1685 N·s/kg, RMSE 0.2297 N·s/kg and R² 0.6767.
+For the current directory, all 58 sessions passed automated QC, producing 308 matched jumps. The force detector bridges sub-50 ms threshold gaps caused by landing-transition filter ringing; this recovered valid events in three affected sessions, including `20260806_Test3`. Ridge regression led the athlete-grouped comparison with MAE 0.1778 N·s/kg, RMSE 0.2427 N·s/kg and R² 0.6477.
 
-All exports currently contain the same ForceDecks `AthleteId`, despite recorded masses ranging from 48.47 to 111.13 kg. This indicates that the metadata ID is not a reliable participant identifier. The current validation is therefore grouped by recording session and must not be interpreted as performance on unseen athletes. Add a correct participant-to-session manifest before athlete-level validation.
+The updated dataset contains 51 valid anonymous athlete UUIDs across 58 sessions. Every force/IMU pair has the same athlete ID in both metadata blocks, and repeat sessions for the four identified longitudinal athletes reuse the appropriate UUID. The batch runner validates this relationship before processing and uses five-fold grouped cross-validation by athlete, so no athlete appears in both training and validation within a fold.
 
 ## Test
 

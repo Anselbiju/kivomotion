@@ -71,6 +71,36 @@ def read_imu_csv(path: str | Path) -> Recording:
     return Recording(data=data, metadata=metadata, source=path)
 
 
+_ATHLETE_ID_PATTERN = re.compile(
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}",
+    re.IGNORECASE,
+)
+
+
+def matching_athlete_id(
+    force_recording: Recording,
+    imu_recording: Recording,
+) -> str:
+    """Return the shared UUID after validating both recording metadata blocks."""
+    force_id = force_recording.metadata.get("AthleteId", "").strip()
+    imu_id = imu_recording.metadata.get("athleteId", "").strip()
+    if not force_id:
+        raise ValueError(f"Force file has no AthleteId: {force_recording.source}")
+    if not imu_id:
+        raise ValueError(f"IMU file has no athleteId: {imu_recording.source}")
+    if not _ATHLETE_ID_PATTERN.fullmatch(force_id):
+        raise ValueError(f"Force file has an invalid AthleteId: {force_id}")
+    if not _ATHLETE_ID_PATTERN.fullmatch(imu_id):
+        raise ValueError(f"IMU file has an invalid athleteId: {imu_id}")
+    if force_id.casefold() != imu_id.casefold():
+        raise ValueError(
+            "Force/IMU athlete ID mismatch: "
+            f"{force_recording.source.name}={force_id}, "
+            f"{imu_recording.source.name}={imu_id}"
+        )
+    return force_id
+
+
 def parse_iso_utc(value: str) -> datetime:
     value = value.strip().replace("Z", "+00:00")
     parsed = datetime.fromisoformat(value)

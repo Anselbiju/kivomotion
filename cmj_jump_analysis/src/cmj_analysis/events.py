@@ -8,6 +8,20 @@ from .signals import contiguous_regions
 G = 9.80665
 
 
+def _merge_short_gaps(
+    regions: list[tuple[int, int]],
+    max_gap_samples: int,
+) -> list[tuple[int, int]]:
+    """Join threshold regions separated only by a brief filter-ring gap."""
+    merged: list[tuple[int, int]] = []
+    for start, end in regions:
+        if merged and start - merged[-1][1] <= max_gap_samples:
+            merged[-1] = (merged[-1][0], end)
+        else:
+            merged.append((start, end))
+    return merged
+
+
 def estimate_bodyweight(force_n: np.ndarray) -> float:
     """Estimate standing bodyweight while excluding off-plate and impact samples."""
     force_n = np.asarray(force_n, dtype=float)
@@ -37,6 +51,7 @@ def detect_force_jumps(
     mass_kg: float | None = None,
     flight_threshold_n: float | None = None,
     min_flight_s: float = 0.20,
+    max_flight_gap_s: float = 0.05,
 ) -> pd.DataFrame:
     """Detect force-plate jumps and compute impulse-derived ground truth."""
     t = force["Time"].to_numpy(dtype=float)
@@ -44,7 +59,10 @@ def detect_force_jumps(
     bw_n = estimate_bodyweight(f)
     mass_kg = float(mass_kg or bw_n / G)
     threshold = float(flight_threshold_n or max(20.0, 0.05 * bw_n))
-    regions = contiguous_regions(f < threshold)
+    regions = _merge_short_gaps(
+        contiguous_regions(f < threshold),
+        max_gap_samples=max(0, int(round(max_flight_gap_s * fs_hz))),
+    )
 
     events: list[dict[str, float | int | str]] = []
     for start, end in regions:

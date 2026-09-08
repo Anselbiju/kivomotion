@@ -21,14 +21,24 @@ import pandas as pd
 
 from cmj_analysis.events import detect_force_jumps, detect_imu_jumps
 from cmj_analysis.features import extract_imu_features
-from cmj_analysis.io import estimate_sampling_rate, nominal_clock_offset_s, read_force_csv, read_imu_csv
+from cmj_analysis.io import (
+    estimate_sampling_rate,
+    matching_athlete_id,
+    nominal_clock_offset_s,
+    read_force_csv,
+    read_imu_csv,
+)
 from cmj_analysis.modeling import train_and_evaluate
 from cmj_analysis.reporting import create_report
 from cmj_analysis.signals import preprocess_force, preprocess_imu
 from cmj_analysis.sync import match_events
 
 
-NAME_PATTERN = re.compile(r"(?P<date>\d{8})_(?P<sensor>CMJ|IMU)_Test(?P<test>\d+)\.csv$", re.I)
+NAME_PATTERN = re.compile(
+    r"(?P<date>\d{8})_(?P<sensor>CMJ|IMU)_Test(?P<test>\d+)"
+    r"(?:_(?P<suffix>[A-Za-z0-9]+))?\.csv$",
+    re.I,
+)
 IMU_CONFIGS = [
     (0.35, 0.18),
     (0.50, 0.15),
@@ -38,21 +48,37 @@ IMU_CONFIGS = [
 
 
 def discover_pairs(data_dir: Path) -> tuple[list[dict], list[dict]]:
-    sessions: dict[tuple[str, int], dict] = {}
+    sessions: dict[tuple[str, int, str], dict] = {}
     ignored = []
     for path in sorted(data_dir.glob("*.csv")):
         match = NAME_PATTERN.match(path.name)
         if not match:
-            ignored.append({"file": str(path), "reason": "filename does not match expected pattern"})
+            ignored.append({
+                "file": str(path),
+                "status": "ignored",
+                "reason": "filename does not match expected pattern",
+            })
             continue
-        key = (match["date"], int(match["test"]))
+        suffix = (match["suffix"] or "").upper()
+        key = (match["date"], int(match["test"]), suffix)
         sessions.setdefault(key, {})[match["sensor"].upper()] = path
     pairs = []
-    for (date, test), files in sorted(sessions.items()):
+    for (date, test, suffix), files in sorted(sessions.items()):
+        session_id = f"{date}_Test{test}" + (f"_{suffix}" if suffix else "")
         if {"CMJ", "IMU"}.issubset(files):
-            pairs.append({"session_id": f"{date}_Test{test}", "date": date, "test": test, **files})
+            pairs.append({
+                "session_id": session_id,
+                "date": date,
+                "test": test,
+                "suffix": suffix,
+                **files,
+            })
         else:
-            ignored.append({"session_id": f"{date}_Test{test}", "reason": "missing force or IMU file"})
+            ignored.append({
+                "session_id": session_id,
+                "status": "ignored",
+                "reason": "missing force or IMU file",
+            })
     return pairs, ignored
 
 
@@ -85,6 +111,7 @@ def best_imu_alignment(imu, force_events, expected_offset):
 def process_session(pair: dict, session_dir: Path, global_start_id: int):
     force_rec = read_force_csv(pair["CMJ"])
     imu_rec = read_imu_csv(pair["IMU"])
+    athlete_id = matching_athlete_id(force_rec, imu_rec)
     force_fs = estimate_sampling_rate(force_rec.data["Time"])
     imu_fs = estimate_sampling_rate(imu_rec.data["time_s"])
     force = preprocess_force(force_rec.data, force_fs)
@@ -105,7 +132,6 @@ def process_session(pair: dict, session_dir: Path, global_start_id: int):
     matched["source_jump_id"] = matched["jump_id"]
     matched["jump_id"] = range(global_start_id, global_start_id + len(matched))
     features = extract_imu_features(imu, matched)
-    athlete_id = force_rec.metadata.get("AthleteId", "unknown")
     for table in (matched, features):
         table["session_id"] = pair["session_id"]
         table["athlete_id"] = athlete_id
@@ -200,4 +226,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
