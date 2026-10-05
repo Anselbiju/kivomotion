@@ -30,9 +30,9 @@ from cmj_analysis.io import (
     read_force_csv,
     read_imu_csv,
 )
-from cmj_analysis.modeling import train_and_evaluate
+from cmj_analysis.modeling import compare_feature_sets
 from cmj_analysis.reporting import create_report
-from cmj_analysis.signals import preprocess_force, preprocess_imu
+from cmj_analysis.signals import assess_imu_quality, preprocess_force, preprocess_imu
 from cmj_analysis.sync import match_events
 
 
@@ -104,9 +104,18 @@ def stage_6_match(force_events, imu_events, processed: Path, expected_offset_s: 
 
 
 def stage_7_velocity_and_features(imu, matched, manifest: dict, processed: Path):
+    imu_fs = estimate_sampling_rate(imu["time_s"])
+    imu_quality = assess_imu_quality(imu, imu_fs)
     features = extract_imu_features(imu, matched)
     features["session_id"] = manifest["session_id"]
     features["athlete_id"] = manifest["athlete_id"]
+    features["imu_orientation_group"] = imu_quality["imu_orientation_group"]
+    matched["session_id"] = manifest["session_id"]
+    matched["imu_orientation_group"] = imu_quality["imu_orientation_group"]
+    matched.to_csv(processed / "matched_events.csv", index=False)
+    (processed / "imu_quality.json").write_text(
+        json.dumps(imu_quality, indent=2), encoding="utf-8"
+    )
     features.to_csv(processed / "model_features.csv", index=False)
     comparison = matched[["jump_id", "takeoff_velocity_m_s", "flight_velocity_m_s", "jump_height_impulse_m", "jump_height_flight_m"]]
     comparison.to_csv(processed / "takeoff_velocity_analysis.csv", index=False)
@@ -115,8 +124,15 @@ def stage_7_velocity_and_features(imu, matched, manifest: dict, processed: Path)
 
 
 def stage_8_model(features, models_dir: Path):
-    result = train_and_evaluate(features, model_path=models_dir / "best_impulse_model.joblib")
-    print(f"8. MODEL: compared {len(result.leaderboard)} regression pipelines")
+    result = compare_feature_sets(
+        features,
+        model_path=models_dir / "best_impulse_model.joblib",
+        candidate_models_dir=models_dir,
+    )
+    print(
+        f"8. MODEL: compared {len(result.leaderboard)} model/feature-set pipelines; "
+        f"selected {result.best_feature_set}"
+    )
     return result
 
 
