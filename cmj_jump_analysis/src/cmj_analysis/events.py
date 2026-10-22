@@ -81,8 +81,8 @@ def detect_force_jumps(
         onset = _movement_onset(f, start, bw_n, fs_hz)
         time_push = t[onset : start + 1]
         net_force = f[onset : start + 1] - bw_n
-        net_impulse = float(np.trapz(net_force, time_push))
-        positive_impulse = float(np.trapz(np.maximum(net_force, 0.0), time_push))
+        net_impulse = float(np.trapezoid(net_force, time_push))
+        positive_impulse = float(np.trapezoid(np.maximum(net_force, 0.0), time_push))
         takeoff_velocity = net_impulse / mass_kg
         flight_time = float(t[end] - t[start])
         flight_velocity = G * flight_time / 2.0

@@ -9,7 +9,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from cmj_analysis.modeling import select_feature_names
 from cmj_analysis.features import extract_imu_inference_features
-from cmj_analysis.signals import assess_imu_quality, contiguous_regions
+from cmj_analysis.signals import assess_imu_quality, contiguous_regions, preprocess_imu
 from cmj_analysis.sync import match_events
 from cmj_analysis.io import Recording, matching_athlete_id
 from cmj_analysis.events import detect_force_jumps
@@ -121,6 +121,28 @@ def test_orientation_quality_labels_y_axis_sign_without_modifying_signal():
     assert negative["imu_orientation_group"] == "Y_negative"
     assert not positive["imu_orientation_review"]
     assert not negative["imu_orientation_review"]
+
+
+def test_filtered_magnitudes_remain_physically_nonnegative():
+    time = np.arange(300, dtype=float) / 100.0
+    impulse = np.zeros(300)
+    impulse[145:155] = 16.0
+    imu = pd.DataFrame(
+        {
+            "time_s": time,
+            "ax_g": impulse,
+            "ay_g": np.ones(300),
+            "az_g": np.zeros(300),
+            "gx_dps": impulse * 10,
+            "gy_dps": np.zeros(300),
+            "gz_dps": np.zeros(300),
+        }
+    )
+
+    processed = preprocess_imu(imu, 100.0)
+
+    assert processed["acc_mag_g_f"].ge(0).all()
+    assert processed["gyro_mag_dps_f"].ge(0).all()
 
 
 def test_target_free_inference_features_match_model_schema():

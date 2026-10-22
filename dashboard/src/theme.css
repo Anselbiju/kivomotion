@@ -1,0 +1,112 @@
+@font-face {
+  font-family: "Manrope";
+  font-style: normal;
+  font-weight: 400 800;
+  font-display: swap;
+  src: url("./content/assets/manrope-latin-variable.woff2") format("woff2");
+}
+
+:root {
+  color-scheme: light;
+  --adaptive-theme: 0;
+  --font-sans-default: "Manrope", sans-serif;
+  --font-sans: var(--font-sans-default);
+  --background: #ffffff;
+  --surface: #ffffff;
+  --surface-raised: #ffffff;
+  --muted: #f5f6f8;
+  --control: #f7f8fa;
+  --control-hover: #eef2f8;
+  --interaction-hover: #f4f7fc;
+  --interaction-active: #eaf0fb;
+  --text: #111111;
+  --secondary: #535963;
+  --border: #e3e6eb;
+  --border-strong: #cbd1d9;
+  --accent: #2f6fdb;
+  --positive: #168a5b;
+  --negative: #d84c5c;
+  --chart-1: #2f6fdb;
+  --chart-2: #d84c5c;
+  --chart-3: #168a5b;
+  --chart-4: #7952b8;
+  --chart-5: #d97922;
+  --chart-6: #1596a0;
+  --chart-7: #ca538e;
+  --chart-8: #6b7280;
+  --chart-neutral-fill: rgb(47 111 219 / 6%);
+  --ranked-list-fill: rgb(47 111 219 / 10%);
+  --ranked-list-fill-hover: rgb(47 111 219 / 17%);
+  --movement-positive: #168a5b;
+  --movement-negative: #d84c5c;
+  --movement-total: #6b7280;
+  --card-radius: 16px;
+  --data-card-radius: 16px;
+  --data-card-background: #ffffff;
+  --control-radius: 10px;
+  --mark-radius: 9;
+  --card-shadow: 0 12px 32px -26px rgb(15 23 42 / 26%);
+  --shadow: 0 24px 60px -38px rgb(15 23 42 / 28%);
+  --dashboard-background: #ffffff;
+  --data-app-chrome-background: #ffffff;
+  --data-app-chrome-text: #111111;
+  --data-app-safe-chrome-foreground: #111111;
+  --data-app-safe-chrome-secondary: #535963;
+  --data-app-safe-chrome-track: rgb(47 111 219 / 9%);
+  --data-app-safe-chrome-indicator: #2f6fdb;
+  --data-app-safe-chrome-indicator-text: #ffffff;
+  --data-app-safe-chrome-publish-background: #168a5b;
+  --data-app-safe-chrome-publish-text: #ffffff;
+  --data-app-safe-chrome-verified: #168a5b;
+  --data-app-safe-chrome-unverified: #98a2b3;
+}
+
+:root:not([data-app-theme]),
+:root:is([data-app-theme="original"], [data-app-theme="codex-classic"]) {
+  --dashboard-background: #ffffff;
+}
+
+/* Theme-level treatment for the shell-owned role tabs. */
+:root .dashboard-tabs {
+  align-items: center;
+  gap: 6px;
+}
+:root .dashboard-tab {
+  box-sizing: border-box;
+  height: 36px;
+  min-height: 36px;
+  margin: 0;
+  padding: 0 14px;
+  border: 1px solid #e3e6eb;
+  border-radius: 10px;
+  line-height: 20px;
+  place-items: center;
+  background: #ffffff;
+  transition: color 180ms ease, background 180ms ease, border-color 180ms ease, box-shadow 180ms ease, transform 180ms ease;
+}
+:root .dashboard-tab-item:first-child .dashboard-tab {
+  padding-right: 14px;
+  padding-left: 14px;
+}
+:root .dashboard-tab-label {
+  display: flex;
+  height: 20px;
+  align-items: center;
+  line-height: 20px;
+}
+:root .dashboard-tab::after { display: none; }
+:root .dashboard-tab:hover {
+  transform: translateY(-1px);
+  border-color: #cbd1d9;
+  background: #f5f7fa;
+  box-shadow: 0 5px 14px -11px rgb(17 17 17 / 17%);
+  color: #111111;
+}
+:root .dashboard-tab[aria-selected="true"] {
+  border-color: #111111;
+  background: #111111;
+  box-shadow: 0 7px 16px -10px rgb(17 17 17 / 35%);
+  color: #ffffff;
+}
+:root .dashboard-tab:focus-visible { outline-color: #64b5ff; outline-offset: 2px; }
+:root .dashboard-tabs > .tab-active-indicator { display: none; }

@@ -26,8 +26,8 @@ def _window_features(imu: pd.DataFrame, event) -> dict[str, float] | None:
     for col in ["ax_g_f", "ay_g_f", "az_g_f", "acc_mag_g_f", "gx_dps_f", "gy_dps_f", "gz_dps_f", "gyro_mag_dps_f"]:
         values.update(_safe_stats(window[col].to_numpy(dtype=float), col))
     time = window["time_s"].to_numpy(dtype=float)
-    values["acc_mag_area_g_s"] = float(np.trapz(np.abs(window["acc_mag_g_f"] - 1.0), time))
-    values["gyro_mag_area_deg"] = float(np.trapz(window["gyro_mag_dps_f"], time))
+    values["acc_mag_area_g_s"] = float(np.trapezoid(np.abs(window["acc_mag_g_f"] - 1.0), time))
+    values["gyro_mag_area_deg"] = float(np.trapezoid(window["gyro_mag_dps_f"], time))
     return values
 
 

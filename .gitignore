@@ -3,6 +3,24 @@ __pycache__/
 *.py[cod]
 *$py.class
 
+# macOS metadata
+.DS_Store
+
+# JavaScript dependencies and generated dashboard builds
+node_modules/
+auth-dist/
+
+# Local dashboard credentials and runtime data
+dashboard/auth/users.local.json
+dashboard/data/kivomotion.sqlite3
+dashboard/data/scientist_reviews.json
+dashboard/data/source_state.json
+
+# Local generated workspaces and exported deliverables
+.archify/
+.ppt-work/
+.ppt-output/
+
 # C extensions
 *.so
 

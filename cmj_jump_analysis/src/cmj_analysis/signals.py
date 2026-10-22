@@ -27,9 +27,16 @@ def preprocess_imu(data: pd.DataFrame, fs_hz: float) -> pd.DataFrame:
     for col in accel_cols + gyro_cols:
         out[f"{col}_f"] = lowpass(out[col].to_numpy(), fs_hz, cutoff_hz=20.0)
     out["acc_mag_g"] = np.linalg.norm(out[accel_cols].to_numpy(), axis=1)
-    out["acc_mag_g_f"] = lowpass(out["acc_mag_g"].to_numpy(), fs_hz, 20.0)
+    filtered_acc_magnitude = lowpass(out["acc_mag_g"].to_numpy(), fs_hz, 20.0)
+    out.attrs["imu_negative_filtered_magnitude_samples"] = int(
+        (filtered_acc_magnitude < 0).sum()
+    )
+    out["acc_mag_g_f"] = np.maximum(filtered_acc_magnitude, 0.0)
     out["gyro_mag_dps"] = np.linalg.norm(out[gyro_cols].to_numpy(), axis=1)
-    out["gyro_mag_dps_f"] = lowpass(out["gyro_mag_dps"].to_numpy(), fs_hz, 20.0)
+    out["gyro_mag_dps_f"] = np.maximum(
+        lowpass(out["gyro_mag_dps"].to_numpy(), fs_hz, 20.0),
+        0.0,
+    )
     return out
 
 
@@ -74,9 +81,7 @@ def assess_imu_quality(imu: pd.DataFrame, fs_hz: float) -> dict[str, float | int
     gaps = np.diff(times)
     positive_gaps = gaps[gaps > 0]
     large_gap_threshold_s = max(0.05, 5.0 / fs_hz)
-    filtered_negative = (
-        int((imu["acc_mag_g_f"] < 0).sum()) if "acc_mag_g_f" in imu else 0
-    )
+    filtered_negative = int(imu.attrs.get("imu_negative_filtered_magnitude_samples", 0))
     return {
         "imu_orientation_group": orientation_group,
         "imu_orientation_review": orientation_review,

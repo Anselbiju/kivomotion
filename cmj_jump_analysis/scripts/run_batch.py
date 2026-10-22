@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -51,6 +52,33 @@ IMU_CONFIGS = [
     (0.65, 0.15),
     (0.80, 0.12),
 ]
+
+
+def build_validation_manifest(feature_table: pd.DataFrame, result, detector_mode: str) -> dict:
+    """Describe the trained artifact and the evidence used to produce it."""
+    canonical = feature_table.sort_values("jump_id").to_csv(
+        index=False,
+        lineterminator="\n",
+        float_format="%.17g",
+    )
+    fixed_detector = detector_mode == "fixed"
+    return {
+        "threshold_mode": detector_mode,
+        "imu_threshold_g": DEFAULT_IMU_FREEFALL_THRESHOLD_G if fixed_detector else None,
+        "imu_min_freefall_s": DEFAULT_IMU_MIN_FREEFALL_S if fixed_detector else None,
+        "grouped_cross_validation": result.validation_method,
+        "research_ready_for_unseen_athletes": bool(result.research_ready),
+        "external_holdout_evaluated": False,
+        "deployment_ready": False,
+        "deployment_blockers": [
+            "No untouched external athlete cohort has been evaluated.",
+            "Detector settings require validation on data collected after they were locked.",
+        ],
+        "model_artifact_version": 2,
+        "model_training_rows": int(len(feature_table)),
+        "model_feature_count": int(len(result.best_result.feature_names)),
+        "model_dataset_sha256": hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
+    }
 
 
 def discover_pairs(data_dir: Path) -> tuple[list[dict], list[dict]]:
@@ -274,6 +302,15 @@ def main() -> None:
         artifact = joblib.load(artifact_path)
         artifact["imu_detector"] = detector_metadata
         joblib.dump(artifact, artifact_path)
+    validation_manifest = build_validation_manifest(
+        feature_table,
+        result,
+        args.imu_detector_mode,
+    )
+    (args.output_dir / "model_validation.json").write_text(
+        json.dumps(validation_manifest, indent=2) + "\n",
+        encoding="utf-8",
+    )
     result.leaderboard.to_csv(reports_dir / "model_leaderboard.csv", index=False)
     result.predictions.to_csv(reports_dir / "out_of_fold_predictions.csv", index=False)
     create_report(
